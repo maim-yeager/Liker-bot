@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 API_TOKEN = os.getenv("BOT_TOKEN", "8716756099:AAE9PowncF7tuYFHK1AEzhC-AFL_Bp5RTE0")
 ALLOWED_GROUP_ID = -1003799260658
 VIP_USER_ID = 6375918223
-ADMIN_USER_ID = 6375918223  # Add admin ID for bot status
+ADMIN_USER_ID = 6375918223
 
 bot = Bot(API_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
@@ -45,14 +45,6 @@ def vip_keyboard():
 def verify_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Verify For Extra Likes", url="https://shortxlinks.in/RTubx")],
-    ])
-
-def admin_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Stats", callback_data="stats"),
-         InlineKeyboardButton(text="🔄 Reset", callback_data="reset")],
-        [InlineKeyboardButton(text="👥 Users", callback_data="users"),
-         InlineKeyboardButton(text="⏱️ Uptime", callback_data="uptime")]
     ])
 
 def reset_daily_limits():
@@ -97,18 +89,21 @@ async def daily_reset_scheduler():
         report = reset_daily_limits()
         
         # Send daily report to admin
-        await bot.send_message(
-            ADMIN_USER_ID,
-            f"📊 Daily Report\n"
-            f"━━━━━━━━━━━━━━━━━\n"
-            f"{report}\n"
-            f"Yesterday's Total:\n"
-            f"🇧🇩 BD: {like_usage['BD']} likes\n"
-            f"🇮🇳 IND: {like_usage['IND']} likes\n"
-            f"👥 Users: {len(user_usage)}\n"
-            f"━━━━━━━━━━━━━━━━━\n"
-            f"New day started! Users can use /like again."
-        )
+        try:
+            await bot.send_message(
+                ADMIN_USER_ID,
+                f"📊 Daily Report\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"{report}\n"
+                f"Yesterday's Total:\n"
+                f"🇧🇩 BD: {like_usage['BD']} likes\n"
+                f"🇮🇳 IND: {like_usage['IND']} likes\n"
+                f"👥 Users: {len(user_usage)}\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"New day started! Users can use /like again."
+            )
+        except Exception as e:
+            logger.error(f"Failed to send daily report: {e}")
 
 async def fetch_json(url):
     try:
@@ -174,6 +169,8 @@ async def help_handler(msg: Message):
 @dp.message(Command("stats"))
 async def stats_handler(msg: Message):
     uptime = datetime.now() - bot_start_time
+    is_vip = (msg.from_user.id == VIP_USER_ID)
+    
     stats_text = (
         f"📊 <b>Bot Statistics</b>\n"
         f"━━━━━━━━━━━━━━━━━\n"
@@ -185,14 +182,19 @@ async def stats_handler(msg: Message):
         f"🇮🇳 <b>IND Region:</b> {like_usage['IND']}/30\n"
         f"━━━━━━━━━━━━━━━━━\n"
         f"👑 <b>VIP Status:</b>\n"
-        if msg.from_user.id == VIP_USER_ID:
-            stats_text += f"✅ <b>You are VIP!</b> Unlimited likes\n"
-        else:
-            stats_text += f"❌ <b>Regular User</b> (1 like/day)\n"
-            stats_text += f"💎 <b>Upgrade to VIP</b> for unlimited access!\n"
-        stats_text += f"━━━━━━━━━━━━━━━━━\n"
-        stats_text += f"🔄 Resets at midnight daily"
     )
+    
+    if is_vip:
+        stats_text += f"✅ <b>You are VIP!</b> Unlimited likes\n"
+    else:
+        stats_text += f"❌ <b>Regular User</b> (1 like/day)\n"
+        stats_text += f"💎 <b>Upgrade to VIP</b> for unlimited access!\n"
+    
+    stats_text += (
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"🔄 Resets at midnight daily"
+    )
+    
     await msg.reply(stats_text, reply_markup=join_keyboard())
 
 @dp.message(Command("like"))
@@ -298,7 +300,9 @@ async def like_handler(msg: Message):
 
     # Update usage
     if not is_vip:
-        user_usage.setdefault(user_id, {})["like"] = 1
+        if user_id not in user_usage:
+            user_usage[user_id] = {}
+        user_usage[user_id]["like"] = 1
         like_usage[region] += 1
         logger.info(f"User {user_id} used like in {region}. Total: {like_usage[region]}")
     else:
@@ -330,11 +334,10 @@ async def admin_handler(msg: Message):
             f"📈 <b>IND Likes:</b> {like_usage['IND']}/30\n"
             f"━━━━━━━━━━━━━━━━━\n"
             f"💡 <b>Commands:</b>\n"
-            f"• /send_status - Send status to all\n"
-            f"• /reset_limits - Force reset limits\n"
-            f"• /broadcast [msg] - Send broadcast"
+            f"• /send_status - Send status to admin\n"
+            f"• /reset_limits - Force reset limits"
         )
-        await msg.reply(admin_text, reply_markup=admin_keyboard())
+        await msg.reply(admin_text)
 
 @dp.message(Command("send_status"))
 async def send_status_handler(msg: Message):
@@ -347,16 +350,6 @@ async def reset_limits_handler(msg: Message):
     if msg.from_user.id == ADMIN_USER_ID:
         report = reset_daily_limits()
         await msg.reply(f"✅ {report}")
-
-@dp.message(Command("broadcast"))
-async def broadcast_handler(msg: Message):
-    if msg.from_user.id == ADMIN_USER_ID:
-        broadcast_msg = msg.text.replace("/broadcast", "").strip()
-        if broadcast_msg:
-            # This would need user IDs stored to broadcast
-            await msg.reply("📢 Broadcast feature would need user database")
-        else:
-            await msg.reply("❌ Usage: /broadcast [message]")
 
 async def on_startup():
     """Actions when bot starts"""
@@ -379,26 +372,31 @@ async def on_startup():
         logger.error(f"Failed to send startup message: {e}")
 
 async def main():
-    # Setup
-    await on_startup()
-    
-    # Start scheduler
-    asyncio.create_task(daily_reset_scheduler())
-    
-    # Remove webhook and start polling
-    await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("Starting polling...")
-    
-    # Send periodic status every 6 hours
-    async def periodic_status():
-        while True:
-            await asyncio.sleep(21600)  # 6 hours
-            await send_bot_status()
-    
-    asyncio.create_task(periodic_status())
-    
-    # Start bot
-    await dp.start_polling(bot)
+    try:
+        # Setup
+        await on_startup()
+        
+        # Start scheduler
+        asyncio.create_task(daily_reset_scheduler())
+        
+        # Remove webhook and start polling
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Starting polling...")
+        
+        # Send periodic status every 6 hours
+        async def periodic_status():
+            while True:
+                await asyncio.sleep(21600)  # 6 hours
+                await send_bot_status()
+        
+        asyncio.create_task(periodic_status())
+        
+        # Start bot
+        await dp.start_polling(bot)
+        
+    except Exception as e:
+        logger.error(f"Error in main: {e}")
+        raise
 
 if __name__ == "__main__":
     try:
