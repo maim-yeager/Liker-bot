@@ -1,30 +1,42 @@
 import asyncio
 import os
 import logging
-from aiogram import Bot, Dispatcher
-from aiogram.enums import ParseMode
-from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
-from aiogram.filters import Command
-from aiogram.client.default import DefaultBotProperties
 from datetime import datetime, timedelta
-import aiohttp
 import sys
 
-# Configure logging
+# Configure logging first
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
+# Import with error handling
+try:
+    from aiogram import Bot, Dispatcher
+    from aiogram.enums import ParseMode
+    from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
+    from aiogram.filters import Command
+    from aiogram.client.default import DefaultBotProperties
+    import aiohttp
+except ImportError as e:
+    logger.error(f"Failed to import dependencies: {e}")
+    logger.info("Please install requirements: pip install -r requirements.txt")
+    sys.exit(1)
+
 # Configuration
 API_TOKEN = os.getenv("BOT_TOKEN", "8716756099:AAE9PowncF7tuYFHK1AEzhC-AFL_Bp5RTE0")
-ALLOWED_GROUP_ID = -1003799260658
+ALLOWED_GROUP_ID = -1003854531903
 VIP_USER_ID = 6375918223
 ADMIN_USER_ID = 6375918223
 
-bot = Bot(API_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
+# Initialize bot
+try:
+    bot = Bot(API_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    dp = Dispatcher()
+except Exception as e:
+    logger.error(f"Failed to initialize bot: {e}")
+    sys.exit(1)
 
 # Storage
 user_usage = {}
@@ -79,31 +91,35 @@ async def send_bot_status():
 async def daily_reset_scheduler():
     """Reset limits at midnight and send report"""
     while True:
-        now = datetime.now()
-        next_reset = datetime.combine(now.date() + timedelta(days=1), datetime.min.time())
-        wait_seconds = (next_reset - now).total_seconds()
-        logger.info(f"Next reset in {wait_seconds/3600:.2f} hours")
-        await asyncio.sleep(wait_seconds)
-        
-        # Reset limits and get report
-        report = reset_daily_limits()
-        
-        # Send daily report to admin
         try:
-            await bot.send_message(
-                ADMIN_USER_ID,
-                f"📊 Daily Report\n"
-                f"━━━━━━━━━━━━━━━━━\n"
-                f"{report}\n"
-                f"Yesterday's Total:\n"
-                f"🇧🇩 BD: {like_usage['BD']} likes\n"
-                f"🇮🇳 IND: {like_usage['IND']} likes\n"
-                f"👥 Users: {len(user_usage)}\n"
-                f"━━━━━━━━━━━━━━━━━\n"
-                f"New day started! Users can use /like again."
-            )
+            now = datetime.now()
+            next_reset = datetime.combine(now.date() + timedelta(days=1), datetime.min.time())
+            wait_seconds = (next_reset - now).total_seconds()
+            logger.info(f"Next reset in {wait_seconds/3600:.2f} hours")
+            await asyncio.sleep(wait_seconds)
+            
+            # Reset limits and get report
+            report = reset_daily_limits()
+            
+            # Send daily report to admin
+            try:
+                await bot.send_message(
+                    ADMIN_USER_ID,
+                    f"📊 Daily Report\n"
+                    f"━━━━━━━━━━━━━━━━━\n"
+                    f"{report}\n"
+                    f"Yesterday's Total:\n"
+                    f"🇧🇩 BD: {like_usage['BD']} likes\n"
+                    f"🇮🇳 IND: {like_usage['IND']} likes\n"
+                    f"👥 Users: {len(user_usage)}\n"
+                    f"━━━━━━━━━━━━━━━━━\n"
+                    f"New day started! Users can use /like again."
+                )
+            except Exception as e:
+                logger.error(f"Failed to send daily report: {e}")
         except Exception as e:
-            logger.error(f"Failed to send daily report: {e}")
+            logger.error(f"Error in daily reset scheduler: {e}")
+            await asyncio.sleep(60)  # Wait 1 minute before retrying
 
 async def fetch_json(url):
     try:
@@ -119,11 +135,30 @@ async def fetch_json(url):
         logger.error(f"Error fetching JSON: {e}")
     return None
 
-def group_only(func):
+def check_permission(func):
+    """Check if user is allowed to use the bot"""
     async def wrapper(msg: Message):
+        user_id = msg.from_user.id
+        
+        # Allow admin and VIP to use bot anywhere
+        if user_id in [ADMIN_USER_ID, VIP_USER_ID]:
+            return await func(msg)
+        
+        # Check if in allowed group
         if msg.chat.id != ALLOWED_GROUP_ID:
-            logger.warning(f"Unauthorized access from chat {msg.chat.id}")
+            logger.warning(f"Unauthorized access from user {user_id} in chat {msg.chat.id}")
+            
+            # Inform user they need to join the group
+            await msg.reply(
+                "❌ <b>Access Denied!</b>\n\n"
+                "This bot is only available in our official group.\n\n"
+                "👉 <b>Join our group to use the bot:</b>\n"
+                "https://t.me/xpm_like_bot\n\n"
+                "After joining, use the bot there!",
+                reply_markup=join_keyboard()
+            )
             return
+        
         return await func(msg)
     return wrapper
 
@@ -145,6 +180,11 @@ async def start_handler(msg: Message):
         "<b>💡 Pro Tip:</b>\n"
         "Join our channel for updates and VIP offers!"
     )
+    
+    # Show group link to non-VIP users
+    if msg.from_user.id not in [ADMIN_USER_ID, VIP_USER_ID]:
+        welcome_text += "\n\n⚠️ <b>Note:</b> Bot works only in our official group!"
+    
     await msg.reply(welcome_text, reply_markup=join_keyboard())
     logger.info(f"User {msg.from_user.id} started the bot")
 
@@ -161,6 +201,9 @@ async def help_handler(msg: Message):
         "• Regular users: 1 like/day\n"
         "• VIP users: Unlimited\n"
         "• Regional limit: 30 likes/day\n\n"
+        "<b>Where to use:</b>\n"
+        "• Bot works in our official group only\n"
+        "• Join: https://t.me/xpm_like_bot\n\n"
         "<b>Need help?</b>\n"
         "Contact: @xr_maim"
     )
@@ -170,6 +213,7 @@ async def help_handler(msg: Message):
 async def stats_handler(msg: Message):
     uptime = datetime.now() - bot_start_time
     is_vip = (msg.from_user.id == VIP_USER_ID)
+    is_admin = (msg.from_user.id == ADMIN_USER_ID)
     
     stats_text = (
         f"📊 <b>Bot Statistics</b>\n"
@@ -181,24 +225,20 @@ async def stats_handler(msg: Message):
         f"🇧🇩 <b>BD Region:</b> {like_usage['BD']}/30\n"
         f"🇮🇳 <b>IND Region:</b> {like_usage['IND']}/30\n"
         f"━━━━━━━━━━━━━━━━━\n"
-        f"👑 <b>VIP Status:</b>\n"
     )
     
-    if is_vip:
-        stats_text += f"✅ <b>You are VIP!</b> Unlimited likes\n"
+    if is_vip or is_admin:
+        stats_text += "👑 <b>VIP Status:</b> ✅ You are VIP! Unlimited likes\n"
     else:
-        stats_text += f"❌ <b>Regular User</b> (1 like/day)\n"
-        stats_text += f"💎 <b>Upgrade to VIP</b> for unlimited access!\n"
+        stats_text += "👑 <b>VIP Status:</b> ❌ Regular User (1 like/day)\n"
+        stats_text += "💎 <b>Upgrade to VIP</b> for unlimited access!\n"
     
-    stats_text += (
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"🔄 Resets at midnight daily"
-    )
+    stats_text += "━━━━━━━━━━━━━━━━━\n🔄 Resets at midnight daily"
     
     await msg.reply(stats_text, reply_markup=join_keyboard())
 
 @dp.message(Command("like"))
-@group_only
+@check_permission  # Use the new permission checker
 async def like_handler(msg: Message):
     parts = msg.text.split()
     if len(parts) != 3:
@@ -310,7 +350,18 @@ async def like_handler(msg: Message):
 
 @dp.message()
 async def handle_other_messages(msg: Message):
-    if msg.chat.id == ALLOWED_GROUP_ID:
+    # Only respond in allowed group for non-VIP users
+    if msg.from_user.id in [ADMIN_USER_ID, VIP_USER_ID]:
+        await msg.reply(
+            "🤖 <b>Unknown Command</b>\n\n"
+            "Use these commands:\n"
+            "• /like bd uid - Send likes\n"
+            "• /like ind uid - Send likes\n"
+            "• /stats - View statistics\n"
+            "• /help - Get help",
+            reply_markup=join_keyboard()
+        )
+    elif msg.chat.id == ALLOWED_GROUP_ID:
         await msg.reply(
             "🤖 <b>Unknown Command</b>\n\n"
             "Use these commands:\n"
