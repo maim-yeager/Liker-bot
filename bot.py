@@ -9,6 +9,7 @@ import aiohttp
 import os
 from flask import Flask
 import threading
+import sys
 
 API_TOKEN = "8716756099:AAE9PowncF7tuYFHK1AEzhC-AFL_Bp5RTE0"
 ALLOWED_GROUP_ID = -1003799260658
@@ -135,19 +136,33 @@ async def like_handler(msg: Message):
         like_usage[region] += 1
 
 async def run_bot():
-    print("🤖 maim AI Like Bot is running...")
+    print("🤖 maim AI Like Bot is starting...")
     asyncio.create_task(daily_reset_scheduler())
     await dp.start_polling(bot)
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    print(f"🔥 Starting Flask server on port {port}")
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
 
 if __name__ == "__main__":
-    # Run Flask in a separate thread
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
+    print("🚀 Initializing bot and web server...")
+    
+    # Run Flask in a separate thread with error handling
+    def start_flask():
+        try:
+            run_flask()
+        except Exception as e:
+            print(f"Flask error: {e}")
+    
+    flask_thread = threading.Thread(target=start_flask, daemon=True)
     flask_thread.start()
     
-    # Run the bot
-    asyncio.run(run_bot())
+    # Run the bot with proper error handling
+    try:
+        asyncio.run(run_bot())
+    except KeyboardInterrupt:
+        print("Bot stopped by user")
+    except Exception as e:
+        print(f"Bot error: {e}")
+        sys.exit(1)
