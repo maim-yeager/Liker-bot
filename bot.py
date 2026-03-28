@@ -6,6 +6,9 @@ from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
 from datetime import datetime, timedelta
 import aiohttp
+import os
+from flask import Flask
+import threading
 
 API_TOKEN = "8716756099:AAE9PowncF7tuYFHK1AEzhC-AFL_Bp5RTE0"
 ALLOWED_GROUP_ID = -1003799260658
@@ -16,6 +19,17 @@ dp = Dispatcher()
 
 user_usage = {}
 like_usage = {"BD": 0, "IND": 0}
+
+# Flask app for health check
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return "Bot is running!", 200
+
+@app.route('/health')
+def health():
+    return "OK", 200
 
 def join_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -120,10 +134,20 @@ async def like_handler(msg: Message):
         user_usage.setdefault(user_id, {})["like"] = 1
         like_usage[region] += 1
 
-async def main():
+async def run_bot():
     print("🤖 maim AI Like Bot is running...")
     asyncio.create_task(daily_reset_scheduler())
     await dp.start_polling(bot)
 
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Run Flask in a separate thread
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+    
+    # Run the bot
+    asyncio.run(run_bot())
