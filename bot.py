@@ -1,15 +1,19 @@
 import asyncio
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
-from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, WebhookInfo
 from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
 from datetime import datetime, timedelta
 import aiohttp
 import os
-from flask import Flask
+from flask import Flask, request, jsonify
 import threading
-import sys
+import logging
+
+# Enable logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 API_TOKEN = "8716756099:AAE9PowncF7tuYFHK1AEzhC-AFL_Bp5RTE0"
 ALLOWED_GROUP_ID = -1003799260658
@@ -21,8 +25,21 @@ dp = Dispatcher()
 user_usage = {}
 like_usage = {"BD": 0, "IND": 0}
 
-# Flask app for health check
+# Flask app for webhook
 app = Flask(__name__)
+
+# Webhook route
+@app.route(f'/webhook/{API_TOKEN}', methods=['POST'])
+async def webhook():
+    try:
+        update_data = request.get_json()
+        if update_data:
+            update = await dp.feed_update(bot, update_data)
+            return jsonify({"status": "ok"})
+        return jsonify({"status": "failed"})
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return jsonify({"status": "error"}), 500
 
 @app.route('/')
 def health_check():
@@ -31,6 +48,15 @@ def health_check():
 @app.route('/health')
 def health():
     return "OK", 200
+
+@app.route('/set-webhook')
+async def set_webhook():
+    try:
+        webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_URL', 'localhost')}/webhook/{API_TOKEN}"
+        await bot.set_webhook(webhook_url)
+        return f"Webhook set to: {webhook_url}"
+    except Exception as e:
+        return f"Error: {e}"
 
 def join_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -52,7 +78,7 @@ def reset_daily_limits():
     user_usage.clear()
     like_usage["BD"] = 0
     like_usage["IND"] = 0
-    print("✅ Daily limits reset.")
+    logger.info("✅ Daily limits reset.")
 
 async def daily_reset_scheduler():
     while True:
@@ -72,6 +98,7 @@ async def fetch_json(url):
 def group_only(func):
     async def wrapper(msg: Message):
         if msg.chat.id != ALLOWED_GROUP_ID:
+            logger.info(f"Message from unauthorized chat: {msg.chat.id}")
             return
         return await func(msg)
     return wrapper
@@ -79,6 +106,8 @@ def group_only(func):
 @dp.message(Command("like"))
 @group_only
 async def like_handler(msg: Message):
+    logger.info(f"Like command received from user {msg.from_user.id} in chat {msg.chat.id}")
+    
     parts = msg.text.split()
     if len(parts) != 3:
         await msg.reply("❗ Correct format: /like bd uid", reply_markup=join_keyboard())
@@ -135,34 +164,50 @@ async def like_handler(msg: Message):
         user_usage.setdefault(user_id, {})["like"] = 1
         like_usage[region] += 1
 
-async def run_bot():
-    print("🤖 maim AI Like Bot is starting...")
-    asyncio.create_task(daily_reset_scheduler())
-    await dp.start_polling(bot)
+async def setup_webhook():
+    """Setup webhook for production"""
+    webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_URL', 'localhost')}/webhook/{API_TOKEN}"
+    await bot.set_webhook(webhook_url)
+    logger.info(f"Webhook set to: {webhook_url}")
+    
+    # Test webhook
+    webhook_info = await bot.get_webhook_info()
+    logger.info(f"Webhook info: {webhook_info}")
 
 def run_flask():
+    """Run Flask app for webhook"""
     port = int(os.environ.get("PORT", 8080))
-    print(f"🔥 Starting Flask server on port {port}")
-    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+    app.run(host="0.0.0.0", port=port)
+
+async def main():
+    """Main function to run the bot"""
+    logger.info("Starting bot...")
+    
+    # Check if running on Render
+    if os.environ.get('RENDER'):
+        logger.info("Running on Render - Setting up webhook")
+        await setup_webhook()
+        
+        # Start daily reset scheduler
+        asyncio.create_task(daily_reset_scheduler())
+        
+        # Keep the event loop running
+        while True:
+            await asyncio.sleep(3600)
+    else:
+        # Local development - use polling
+        logger.info("Running locally - Using polling")
+        asyncio.create_task(daily_reset_scheduler())
+        await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    print("🚀 Initializing bot and web server...")
-    
-    # Run Flask in a separate thread with error handling
-    def start_flask():
-        try:
-            run_flask()
-        except Exception as e:
-            print(f"Flask error: {e}")
-    
-    flask_thread = threading.Thread(target=start_flask, daemon=True)
+    # Run Flask in separate thread for webhook
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
     flask_thread.start()
     
-    # Run the bot with proper error handling
+    # Run the bot
     try:
-        asyncio.run(run_bot())
+        asyncio.run(main())
     except KeyboardInterrupt:
-        print("Bot stopped by user")
-    except Exception as e:
-        print(f"Bot error: {e}")
-        sys.exit(1)
+        logger.info("Bot stopped")
