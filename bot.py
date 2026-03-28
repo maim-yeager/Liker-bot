@@ -3,6 +3,7 @@ import os
 import logging
 from datetime import datetime, timedelta
 import sys
+import random
 
 # Configure logging first
 logging.basicConfig(
@@ -26,9 +27,16 @@ except ImportError as e:
 
 # Configuration
 API_TOKEN = os.getenv("BOT_TOKEN", "8716756099:AAE9PowncF7tuYFHK1AEzhC-AFL_Bp5RTE0")
-ALLOWED_GROUP_ID = -1003854531903
+ALLOWED_GROUP_ID = -1003799260658
 VIP_USER_ID = 6375918223
 ADMIN_USER_ID = 6375918223
+
+# Multiple API endpoints (add more if available)
+API_ENDPOINTS = [
+    "https://anish-likes.vercel.app/like",
+    # Add backup APIs here if you have them
+    # "https://backup-api.com/like",
+]
 
 # Initialize bot
 try:
@@ -42,6 +50,8 @@ except Exception as e:
 user_usage = {}
 like_usage = {"BD": 0, "IND": 0}
 bot_start_time = datetime.now()
+api_failure_count = 0
+last_api_failure_time = None
 
 def join_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -68,6 +78,8 @@ def reset_daily_limits():
 
 async def send_bot_status():
     """Send bot status to admin"""
+    global api_failure_count
+    
     uptime = datetime.now() - bot_start_time
     status_text = (
         f"🤖 Bot Status Report\n"
@@ -80,6 +92,9 @@ async def send_bot_status():
         f"🇧🇩 BD Likes: {like_usage['BD']}/30\n"
         f"🇮🇳 IND Likes: {like_usage['IND']}/30\n"
         f"👥 Active Users: {len(user_usage)}\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"⚠️ API Status:\n"
+        f"• Failures: {api_failure_count}\n"
         f"━━━━━━━━━━━━━━━━━\n"
         f"💡 Use /stats for detailed info"
     )
@@ -121,19 +136,56 @@ async def daily_reset_scheduler():
             logger.error(f"Error in daily reset scheduler: {e}")
             await asyncio.sleep(60)  # Wait 1 minute before retrying
 
-async def fetch_json(url):
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as r:
-                if r.status == 200:
-                    return await r.json()
-                else:
-                    logger.error(f"API returned status {r.status}")
-    except asyncio.TimeoutError:
-        logger.error("API request timed out")
-    except Exception as e:
-        logger.error(f"Error fetching JSON: {e}")
+async def fetch_json_with_retry(url, max_retries=3):
+    """Fetch JSON with retry logic"""
+    global api_failure_count, last_api_failure_time
+    
+    for attempt in range(max_retries):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=10) as r:
+                    if r.status == 200:
+                        # Reset failure count on success
+                        if api_failure_count > 0:
+                            api_failure_count = 0
+                            await bot.send_message(
+                                ADMIN_USER_ID,
+                                "✅ API connection restored! Bot is working normally."
+                            )
+                        return await r.json()
+                    else:
+                        logger.error(f"API returned status {r.status}")
+                        
+        except asyncio.TimeoutError:
+            logger.error(f"API request timed out (attempt {attempt + 1}/{max_retries})")
+        except aiohttp.ClientError as e:
+            logger.error(f"API client error: {e} (attempt {attempt + 1}/{max_retries})")
+        except Exception as e:
+            logger.error(f"Error fetching JSON: {e} (attempt {attempt + 1}/{max_retries})")
+        
+        # Wait before retry with exponential backoff
+        if attempt < max_retries - 1:
+            wait_time = 2 ** attempt  # 1, 2, 4 seconds
+            await asyncio.sleep(wait_time)
+    
+    # All retries failed
+    api_failure_count += 1
+    last_api_failure_time = datetime.now()
+    
+    # Alert admin if this is the 3rd consecutive failure
+    if api_failure_count >= 3:
+        await bot.send_message(
+            ADMIN_USER_ID,
+            f"⚠️ API Alert: {api_failure_count} consecutive failures!\n"
+            f"Last failure: {last_api_failure_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"Please check the API endpoint."
+        )
+    
     return None
+
+async def fetch_json(url):
+    """Legacy function for compatibility"""
+    return await fetch_json_with_retry(url)
 
 def check_permission(func):
     """Check if user is allowed to use the bot"""
@@ -171,7 +223,8 @@ async def start_handler(msg: Message):
         "• /like bd uid - Send likes to BD region\n"
         "• /like ind uid - Send likes to IND region\n"
         "• /stats - Check bot statistics\n"
-        "• /help - Show this message\n\n"
+        "• /help - Show this message\n"
+        "• /ping - Check bot & API status\n\n"
         "<b>⭐ Features:</b>\n"
         "• Free 1 like per day per user\n"
         "• 30 likes total per region daily\n"
@@ -187,6 +240,42 @@ async def start_handler(msg: Message):
     
     await msg.reply(welcome_text, reply_markup=join_keyboard())
     logger.info(f"User {msg.from_user.id} started the bot")
+
+@dp.message(Command("ping"))
+async def ping_handler(msg: Message):
+    """Check bot and API status"""
+    start_time = datetime.now()
+    
+    # Check API status
+    ping_msg = await msg.reply("🏓 Pinging API server...")
+    
+    test_url = f"https://anish-likes.vercel.app/like?server_name=bd&uid=123456789&key=jex4rrr"
+    data = await fetch_json_with_retry(test_url, max_retries=1)
+    
+    response_time = (datetime.now() - start_time).total_seconds()
+    
+    if data:
+        await ping_msg.edit_text(
+            f"🏓 <b>Pong!</b>\n\n"
+            f"✅ Bot Status: Online\n"
+            f"✅ API Status: Connected\n"
+            f"⏱️ Response Time: {response_time:.2f}s\n"
+            f"━━━━━━━━━━━━━━━━━\n"
+            f"📊 Bot Statistics:\n"
+            f"• Uptime: {str(datetime.now() - bot_start_time).split('.')[0]}\n"
+            f"• Active Users: {len(user_usage)}\n"
+            f"• BD Likes: {like_usage['BD']}/30\n"
+            f"• IND Likes: {like_usage['IND']}/30"
+        )
+    else:
+        await ping_msg.edit_text(
+            f"🏓 <b>Pong!</b>\n\n"
+            f"✅ Bot Status: Online\n"
+            f"❌ API Status: Disconnected\n"
+            f"⏱️ Response Time: {response_time:.2f}s\n\n"
+            f"⚠️ API server is not responding.\n"
+            f"Please try again later or contact @xr_maim"
+        )
 
 @dp.message(Command("help"))
 async def help_handler(msg: Message):
@@ -204,6 +293,9 @@ async def help_handler(msg: Message):
         "<b>Where to use:</b>\n"
         "• Bot works in our official group only\n"
         "• Join: https://t.me/xpm_like_bot\n\n"
+        "<b>Check status:</b>\n"
+        "• /ping - Check if bot is working\n"
+        "• /stats - View bot statistics\n\n"
         "<b>Need help?</b>\n"
         "Contact: @xr_maim"
     )
@@ -233,12 +325,13 @@ async def stats_handler(msg: Message):
         stats_text += "👑 <b>VIP Status:</b> ❌ Regular User (1 like/day)\n"
         stats_text += "💎 <b>Upgrade to VIP</b> for unlimited access!\n"
     
-    stats_text += "━━━━━━━━━━━━━━━━━\n🔄 Resets at midnight daily"
+    stats_text += f"━━━━━━━━━━━━━━━━━\n"
+    stats_text += f"🔄 Resets at midnight daily"
     
     await msg.reply(stats_text, reply_markup=join_keyboard())
 
 @dp.message(Command("like"))
-@check_permission  # Use the new permission checker
+@check_permission
 async def like_handler(msg: Message):
     parts = msg.text.split()
     if len(parts) != 3:
@@ -248,7 +341,8 @@ async def like_handler(msg: Message):
             "/like bd [UID]\n"
             "/like ind [UID]\n\n"
             "<b>Example:</b>\n"
-            "/like bd 123456789",
+            "/like bd 123456789\n\n"
+            "💡 <b>Tip:</b> Make sure the UID is correct!",
             reply_markup=join_keyboard()
         )
         return
@@ -295,18 +389,27 @@ async def like_handler(msg: Message):
         )
         return
 
-    # Send likes
-    wait_msg = await msg.reply("⏳ <b>Sending Likes...</b>\n\nPlease wait while we process your request.")
+    # Send likes with retry
+    wait_msg = await msg.reply("⏳ <b>Sending Likes...</b>\n\nPlease wait while we process your request.\n\nThis may take a few seconds...")
     
     url = f"https://anish-likes.vercel.app/like?server_name={region.lower()}&uid={uid}&key=jex4rrr"
-    data = await fetch_json(url)
+    
+    # Try with retry
+    data = await fetch_json_with_retry(url, max_retries=3)
 
     if not data:
         await wait_msg.edit_text(
             "❌ <b>Connection Error!</b>\n\n"
-            "Failed to connect to API server.\n"
-            "Please try again in a few minutes.\n\n"
-            "If problem persists, contact @xr_maim",
+            "The like server is currently not responding.\n\n"
+            "<b>Possible reasons:</b>\n"
+            "• Server is under maintenance\n"
+            "• High traffic on the server\n"
+            "• Network issues\n\n"
+            "<b>What to do:</b>\n"
+            "• Wait 5-10 minutes and try again\n"
+            "• Check /ping to see server status\n"
+            "• Contact @xr_maim if issue persists\n\n"
+            f"📊 Status: {api_failure_count} failures recorded",
             reply_markup=join_keyboard()
         )
         return
@@ -358,6 +461,7 @@ async def handle_other_messages(msg: Message):
             "• /like bd uid - Send likes\n"
             "• /like ind uid - Send likes\n"
             "• /stats - View statistics\n"
+            "• /ping - Check bot status\n"
             "• /help - Get help",
             reply_markup=join_keyboard()
         )
@@ -368,6 +472,7 @@ async def handle_other_messages(msg: Message):
             "• /like bd uid - Send likes\n"
             "• /like ind uid - Send likes\n"
             "• /stats - View statistics\n"
+            "• /ping - Check bot status\n"
             "• /help - Get help",
             reply_markup=join_keyboard()
         )
@@ -384,11 +489,47 @@ async def admin_handler(msg: Message):
             f"📈 <b>BD Likes:</b> {like_usage['BD']}/30\n"
             f"📈 <b>IND Likes:</b> {like_usage['IND']}/30\n"
             f"━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ <b>API Status:</b>\n"
+            f"• Failures: {api_failure_count}\n"
+            f"━━━━━━━━━━━━━━━━━\n"
             f"💡 <b>Commands:</b>\n"
             f"• /send_status - Send status to admin\n"
-            f"• /reset_limits - Force reset limits"
+            f"• /reset_limits - Force reset limits\n"
+            f"• /test_api - Test API connection"
         )
         await msg.reply(admin_text)
+
+@dp.message(Command("test_api"))
+async def test_api_handler(msg: Message):
+    """Test API connection"""
+    if msg.from_user.id == ADMIN_USER_ID:
+        test_msg = await msg.reply("🔄 Testing API connection...")
+        
+        test_url = f"https://anish-likes.vercel.app/like?server_name=bd&uid=123456789&key=jex4rrr"
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(test_url, timeout=5) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        await test_msg.edit_text(
+                            f"✅ <b>API Test Successful!</b>\n\n"
+                            f"Status Code: {r.status}\n"
+                            f"Response: {data}\n\n"
+                            f"API is working normally."
+                        )
+                    else:
+                        await test_msg.edit_text(
+                            f"❌ <b>API Test Failed!</b>\n\n"
+                            f"Status Code: {r.status}\n"
+                            f"API returned error status."
+                        )
+        except Exception as e:
+            await test_msg.edit_text(
+                f"❌ <b>API Test Failed!</b>\n\n"
+                f"Error: {str(e)}\n\n"
+                f"The API server is not responding."
+            )
 
 @dp.message(Command("send_status"))
 async def send_status_handler(msg: Message):
@@ -415,7 +556,9 @@ async def on_startup():
         f"━━━━━━━━━━━━━━━━━\n"
         f"✅ All systems operational\n"
         f"✅ Daily limits initialized\n"
-        f"✅ Ready to accept commands"
+        f"✅ API endpoints configured\n"
+        f"✅ Ready to accept commands\n\n"
+        f"💡 Use /ping to check API status"
     )
     try:
         await bot.send_message(ADMIN_USER_ID, startup_text, parse_mode=ParseMode.HTML)
